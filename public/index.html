@@ -131,6 +131,21 @@
         <ul id="multiSpecList" class="multi-spec-list"></ul>
       </section>
 
+      <section class="panel route-panel" id="routePanel">
+        <h2>调机旋转路径 <span class="hint">基于当前模式的可行/共用安全段</span></h2>
+        <div class="route-inputs">
+          <label>当前角度 (°)
+            <input id="routeFrom" type="number" step="any" value="0" />
+          </label>
+          <label>目标角度 (°)
+            <input id="routeTo" type="number" step="any" value="0" />
+          </label>
+        </div>
+        <div id="routeResult" class="route-result">
+          <p class="hint">完成一次计算后，可在此规划从当前角度到目标角度的安全旋转路径</p>
+        </div>
+      </section>
+
       <section class="panel diff-panel" id="diffListPanel" hidden>
         <h2>差异明细</h2>
         <div id="diffLists"></div>
@@ -139,6 +154,7 @@
   </main>
 
   <script src="/src/snapshotDiff.js"></script>
+  <script src="/src/routePlan.js"></script>
   <script src="snapshotStore.js"></script>
   <script src="app.js"></script>
 </body>

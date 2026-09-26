@@ -24,6 +24,16 @@
 - 切回「单规格模式」时，单规格的周长与多规格周长列表均保留在页面中，**不会丢失任何已输入内容**。
 - 方案快照仅保存单规格结果，多规格模式下快照入口自动禁用。
 
+## 调机旋转路径规划
+
+在右栏「调机旋转路径」面板输入**当前角度 (°)** 与**目标角度 (°)**（按整圈归一，允许任意数值），系统基于当前模式的安全角度段（单规格**可行段** / 多规格**共用段**）规划调机旋转路径：
+
+- **两端安全**：当前角度与目标角度必须各自落在安全角度段内，否则分别指出「起点不在安全角度段内」或「目标不在安全角度段内」。
+- **启用设备档位约束时**，两端还须落在**可用档位**上，否则分别指出「起点/目标不在可用档位上」（端点不安全优先于不在档位报告）。
+- **只允许沿圆周连续旋转**且全过程处于安全角度：分别评估**顺时针**与**逆时针**两条路径，在可行路径中**选转角较短者，等长取顺时针**；跨 0°、整圈可行、起终点相同（转角 0°，取顺时针）均正确处理。
+- **两端各自安全但被禁用段隔开**时报告**不可达**（沿圆周连续旋转无法全程保持安全角度）。
+- 页面显示**方向、转角**与两个方向的可行性，Canvas 外侧绘制**紫色路径弧**（● 当前角度，○ 目标角度，终点带方向箭头；不可达时仅显示红色端点）；参数重算后路径结果**同步刷新**，未手动改过输入时自动以当前位置与默认角度填充。
+
 ## 方案快照
 
 - 在「方案快照」面板可为**当前周长、接缝宽度、保护区与设备档位设置的计算结果**命名并保存；快照按时间倒序列出，支持载入参数（含档位开关、档位数与偏移）与删除。
@@ -39,10 +49,13 @@
 
 前置条件：已安装 Docker 与 Docker Compose（Docker Desktop 自带 `docker compose` 插件）。
 
-```bash
-# 在项目根目录（含 docker-compose.yml）构建镜像并前台启动
-docker compose up --build
+单条命令构建并启动（依赖安装与初始化均已纳入镜像构建，启动即就绪）：
 
+```bash
+docker compose up --build
+```
+
+```bash
 # 后台运行
 docker compose up --build -d
 
@@ -61,14 +74,18 @@ docker compose down
 
 ## 访问
 
-http://localhost:3000
+- **网页**：http://localhost:3000
+- **API**（与网页同端口 `3000`）：
+  - `POST http://localhost:3000/api/compute`（单规格计算）
+  - `POST http://localhost:3000/api/compute-multi`（多规格共用角度）
+  - `GET  http://localhost:3000/api/health`（健康检查）
 
 ## API
 
 | 方法 & 路径 | 说明 |
 | ----------- | ---- |
-| `POST /api/compute` | 单规格计算。请求体：`{circumference, seamWidth, zones:[{start,end}], detents?}`（单位 mm） |
-| `POST /api/compute-multi` | 多规格共用角度。请求体：`{circumferences:[…2～8 个周长…], seamWidth, zones, detents?}`；返回每个规格的完整单规格结果（`specs[].result`）、圆周交集 `common`（角度弧段）、默认角度 `best.deg` 及各规格间隙 `best.gaps`；无共同解时 `noSolution=true` 并给出 `blocker`（首次归零的规格序号、此前公共段 `priorCommon`、该规格禁用段 `blockingForbidden` 与冲突区间 `conflictSegments`）与最小违约备选 `fallback`（见下） |
+| `POST /api/compute` | 单规格计算。请求体：`{circumference, seamWidth, zones:[{start,end}], detents?, route?}`（单位 mm；`route` 见下） |
+| `POST /api/compute-multi` | 多规格共用角度。请求体：`{circumferences:[…2～8 个周长…], seamWidth, zones, detents?, route?}`；返回每个规格的完整单规格结果（`specs[].result`）、圆周交集 `common`（角度弧段）、默认角度 `best.deg` 及各规格间隙 `best.gaps`；无共同解时 `noSolution=true` 并给出 `blocker`（首次归零的规格序号、此前公共段 `priorCommon`、该规格禁用段 `blockingForbidden` 与冲突区间 `conflictSegments`）与最小违约备选 `fallback`（见下） |
 | `GET /api/health` | 健康检查 |
 
 `detents`（可选）为设备档位约束：`{enabled:true, steps:2～360 的整数, offsetDeg?:数值角度}`；缺省或 `enabled:false` 时行为不变（返回 `detents:{enabled:false}`）。启用后返回：
@@ -77,6 +94,22 @@ http://localhost:3000
 - `detents.available`：全部可用档位。单规格每项 `{index, deg, mm, gapDeg}`；多规格每项 `{index, deg, minGapDeg, gaps:[各规格间隙]}`；
 - 单规格 `best` 取最优可用档位（附 `detentIndex`）；多规格 `best` 同理；
 - 连续区间有解但无可用档位时 `best=null`、`detents.noAvailable=true`，`detents.nearest[]` 按可行/共用弧给出 `{before, after}`（最近前、后档位及角距离）；保护区覆盖整圈时 `noSolution=true`、`noAvailable=false`。
+
+### 调机旋转路径 `route`（`POST /api/compute` 与 `POST /api/compute-multi` 共用）
+
+请求体中传入可选的 `route:{fromDeg, toDeg}`（角度，按整圈归一）后，响应中返回结构一致的 `route` 结果；未传时 `route=null`。路径基于单规格可行段 / 多规格共用段计算，启用档位时两端还须落在可用档位上。字段：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `fromDeg` / `toDeg` | 归一化到 `[0,360)` 的当前/目标角度 |
+| `reachable` | 是否可达（两端安全且存在全程安全的连续旋转路径） |
+| `status` | `ok` 可达；`fromUnsafe` / `toUnsafe` 起点/目标不在安全角度段内；`fromNotOnDetent` / `toNotOnDetent` 起点/目标不在可用档位上（启用档位时）；`unreachable` 两端各自安全但被禁用段隔开 |
+| `direction` | 选中的方向：`cw` 顺时针 / `ccw` 逆时针；不可达为 `null` |
+| `angleDeg` | 选中的转角（°，`0 ≤ angleDeg < 360`；起终点相同为 0，取顺时针）；不可达为 `null` |
+| `cw` / `ccw` | 两个方向各自的 `{angleDeg, feasible}`：顺时针/逆时针转角及该方向是否全程安全 |
+| `message` | 中文说明（不可达原因或旋转方案） |
+
+选择规则：在可行方向中取**转角较短者，等长取顺时针**；跨 0°、整圈可行、起终点相同均正确处理。
 
 ### 最小违约备选 `fallback`（仅 `POST /api/compute-multi`）
 

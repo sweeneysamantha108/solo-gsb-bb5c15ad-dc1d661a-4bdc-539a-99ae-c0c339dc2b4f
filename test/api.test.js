@@ -181,3 +181,124 @@ test('多规格：无共同解时返回最小违约备选 fallback（关闭/启�
   );
   assert.match(rd.json.fallback.reason, /档位/);
 });
+
+/* ---------------- 调机旋转路径 route ---------------- */
+
+test('route 参数校验：非对象/缺角度/非数值 → 400', async () => {
+  for (const bad of [42, 'x', [], {}, { fromDeg: 10 }, { fromDeg: 'a', toDeg: 10 }]) {
+    const r = await postJson('/api/compute', { ...baseSingle, route: bad });
+    assert.equal(r.status, 400, `route=${JSON.stringify(bad)} 应 400`);
+    assert.match(r.json.error, /route/);
+  }
+  const badMulti = await postJson('/api/compute-multi', { ...baseMulti, route: { fromDeg: 0 } });
+  assert.equal(badMulti.status, 400);
+});
+
+test('单规格：未传 route 时 route=null；传入后返回路径结果', async () => {
+  const noRoute = await postJson('/api/compute', baseSingle);
+  assert.equal(noRoute.status, 200);
+  assert.equal(noRoute.json.route, null);
+
+  // 可行段 [108,162] 与跨零 [234,36]：300°→30° 顺时针 90°
+  const r = await postJson('/api/compute', {
+    ...baseSingle,
+    zones: [
+      { start: 60, end: 120 },
+      { start: 200, end: 260 },
+    ],
+    route: { fromDeg: 300, toDeg: 30 },
+  });
+  assert.equal(r.status, 200);
+  const route = r.json.route;
+  assert.equal(route.reachable, true);
+  assert.equal(route.status, 'ok');
+  assert.equal(route.direction, 'cw');
+  assert.ok(Math.abs(route.angleDeg - 90) < 1e-7);
+  assert.equal(route.cw.feasible, true);
+  assert.equal(route.ccw.feasible, false);
+});
+
+test('单规格：route 不可达/端点不安全/不在档位分别报告', async () => {
+  const zones = [
+    { start: 60, end: 120 },
+    { start: 200, end: 260 },
+  ];
+  // 两端各自安全但被禁用段隔开
+  const sep = await postJson('/api/compute', {
+    ...baseSingle,
+    zones,
+    route: { fromDeg: 150, toDeg: 300 },
+  });
+  assert.equal(sep.json.route.reachable, false);
+  assert.equal(sep.json.route.status, 'unreachable');
+
+  // 起点不安全（50° 在禁用 36°–108° 内）
+  const fromBad = await postJson('/api/compute', {
+    ...baseSingle,
+    zones,
+    route: { fromDeg: 50, toDeg: 300 },
+  });
+  assert.equal(fromBad.json.route.status, 'fromUnsafe');
+
+  // 目标不安全（200° 在禁用 162°–234° 内）
+  const toBad = await postJson('/api/compute', {
+    ...baseSingle,
+    zones,
+    route: { fromDeg: 300, toDeg: 200 },
+  });
+  assert.equal(toBad.json.route.status, 'toUnsafe');
+
+  // 启用档位：20° 安全但不是 12 档之一
+  const det = await postJson('/api/compute', {
+    ...baseSingle,
+    zones,
+    detents: { enabled: true, steps: 12 },
+    route: { fromDeg: 300, toDeg: 20 },
+  });
+  assert.equal(det.json.route.status, 'toNotOnDetent');
+  const detOk = await postJson('/api/compute', {
+    ...baseSingle,
+    zones,
+    detents: { enabled: true, steps: 12 },
+    route: { fromDeg: 300, toDeg: 30 },
+  });
+  assert.equal(detOk.json.route.reachable, true);
+  assert.equal(detOk.json.route.direction, 'cw');
+});
+
+test('多规格：route 基于共用安全段，与单规格结构一致', async () => {
+  // 公共段 216°→36°（跨零，宽 180°）
+  const r = await postJson('/api/compute-multi', {
+    ...baseMulti,
+    route: { fromDeg: 300, toDeg: 30 },
+  });
+  assert.equal(r.status, 200);
+  const route = r.json.route;
+  assert.equal(route.reachable, true);
+  assert.equal(route.direction, 'cw');
+  assert.ok(Math.abs(route.angleDeg - 90) < 1e-7);
+
+  // 100° 不在公共段内
+  const toBad = await postJson('/api/compute-multi', {
+    ...baseMulti,
+    route: { fromDeg: 300, toDeg: 100 },
+  });
+  assert.equal(toBad.json.route.status, 'toUnsafe');
+
+  // 无共同解：共用段为空，起点不安全
+  const noSol = await postJson('/api/compute-multi', {
+    circumferences: [360, 180],
+    seamWidth: 0,
+    zones: [
+      { start: 90, end: 180 },
+      { start: 180, end: 360 },
+    ],
+    route: { fromDeg: 10, toDeg: 20 },
+  });
+  assert.equal(noSol.json.noSolution, true);
+  assert.equal(noSol.json.route.status, 'fromUnsafe');
+
+  // 未传 route 时 route=null
+  const noRoute = await postJson('/api/compute-multi', baseMulti);
+  assert.equal(noRoute.json.route, null);
+});

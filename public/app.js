@@ -18,6 +18,9 @@ const state = {
   rawDeg: null,        // 拖动时未吸附的原始角度（多规格）
   selected: [],        // 选中的快照 id（按选择顺序，最多 2 个）
   currentDiff: null,   // 当前展示的差异结果
+  route: null,         // 调机旋转路径规划结果（RoutePlan.planRoute 返回）
+  routeMode: null,     // 路径结果所属模式（'single' | 'multi'）
+  routeTouched: false, // 用户手动改过当前/目标角度后，不再自动填充默认值
 };
 
 const SPEC_COLORS = [
@@ -219,6 +222,7 @@ async function compute() {
   if (result.best) state.thetaMm = result.best.mm;
   exitDiffMode();
   renderResults();
+  refreshRouteAfterCompute();
   draw();
 }
 
@@ -262,6 +266,7 @@ async function computeMulti() {
   }
   exitDiffMode();
   renderMultiResults();
+  refreshRouteAfterCompute();
   draw();
 }
 
@@ -805,6 +810,91 @@ function snapToCommon(m) {
   return best ? best.v : null;
 }
 
+/* ---------------- 调机旋转路径 ---------------- */
+
+/** 当前模式下用于路径规划的安全弧与档位约束。 */
+function routeContext() {
+  if (state.mode === 'multi') {
+    const r = state.multiResult;
+    if (!r) return null;
+    return {
+      arcs: r.noSolution ? [] : r.common,
+      detents: r.detents && r.detents.enabled ? r.detents : null,
+    };
+  }
+  const r = state.result;
+  if (!r) return null;
+  return {
+    arcs: r.noSolution ? [] : r.feasible,
+    detents: r.detents && r.detents.enabled ? r.detents : null,
+  };
+}
+
+/** 参数重算后同步刷新：未手动改过输入时填入默认当前/目标角度，并重新规划路径。 */
+function refreshRouteAfterCompute() {
+  if (!state.routeTouched) {
+    if (state.mode === 'multi') {
+      const r = state.multiResult;
+      $('routeFrom').value = fmtDeg(mod(state.thetaDeg, 360));
+      const to = r && r.best ? r.best.deg : r && r.fallback ? r.fallback.deg : state.thetaDeg;
+      $('routeTo').value = fmtDeg(mod(to, 360));
+    } else {
+      const r = state.result;
+      const cur = r ? (state.thetaMm / r.circumference) * 360 : 0;
+      $('routeFrom').value = fmtDeg(mod(cur, 360));
+      $('routeTo').value = fmtDeg(r && r.best ? r.best.deg : mod(cur, 360));
+    }
+  }
+  planRouteUi();
+}
+
+/** 读取当前/目标角度输入，基于当前模式结果规划路径并刷新展示。 */
+function planRouteUi() {
+  const box = $('routeResult');
+  const from = parseFloat($('routeFrom').value);
+  const to = parseFloat($('routeTo').value);
+  state.route = null;
+  state.routeMode = state.mode;
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    box.innerHTML = '<p class="route-err">当前角度与目标角度必须为数值（°）</p>';
+    draw();
+    return;
+  }
+  const ctx = routeContext();
+  if (!ctx) {
+    box.innerHTML = '<p class="hint">请先完成一次计算，再规划旋转路径</p>';
+    draw();
+    return;
+  }
+  state.route = RoutePlan.planRoute(ctx.arcs, from, to, ctx.detents);
+  box.innerHTML = renderRouteHtml(state.route);
+  draw();
+}
+
+function renderRouteHtml(route) {
+  const dirName = route.direction === 'cw' ? '顺时针' : '逆时针';
+  const dirLine = (label, d) => `${label} ${fmtDeg(d.angleDeg)}°（${d.feasible ? '可行' : '不可行'}）`;
+  const both = `${dirLine('顺时针', route.cw)} ｜ ${dirLine('逆时针', route.ccw)}`;
+  const legend =
+    '<div class="route-legend">Canvas 外侧弧为旋转路径：● 当前角度，○ 目标角度</div>';
+  if (!route.reachable) {
+    return (
+      `<div class="route-err"><strong>不可达：</strong>${escapeHtml(route.message)}` +
+      `<div class="route-sub">${both}</div></div>` +
+      legend
+    );
+  }
+  if (route.angleDeg <= 1e-9) {
+    return `<div class="route-ok"><strong>${escapeHtml(route.message)}</strong></div>` + legend;
+  }
+  return (
+    `<div class="route-ok">方向 <strong>${dirName}</strong> ｜ 转角 ` +
+    `<span class="num">${fmtDeg(route.angleDeg)}°</span>` +
+    `<div class="route-sub">${both}；取转角较短者，等长取顺时针</div></div>` +
+    legend
+  );
+}
+
 /* ---------------- Canvas ---------------- */
 
 function geom() {
@@ -905,6 +995,68 @@ function drawRingSegments(cx, cy, r, segments, C, color, width) {
     const a1 = s.wraps ? rad(s.endMm + C, C) : rad(s.endMm, C);
     arc(cx, cy, r, a0, a1);
   }
+}
+
+/**
+ * 在主 Canvas 外侧绘制调机旋转路径弧（单/多规格共用，角度域）。
+ * 可达：紫色方向弧 + 终点箭头；不可达：仅红色端点标记。
+ */
+function drawRouteOverlay(cx, cy, R) {
+  const route = state.route;
+  if (!route || state.routeMode !== state.mode) return;
+  const r = R + 46;
+  const radA = (deg) => (deg / 360) * TAU - Math.PI / 2;
+  const color = route.reachable ? '#7c3aed' : '#dc2626';
+
+  if (route.reachable && route.angleDeg > 1e-9) {
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, radA(route.fromDeg), radA(route.toDeg), route.direction === 'ccw');
+    ctx.stroke();
+    ctx.restore();
+
+    // 终点箭头（沿圆周切向）
+    const a = radA(route.toDeg);
+    const sign = route.direction === 'cw' ? 1 : -1;
+    const ux = Math.cos(a);
+    const uy = Math.sin(a);
+    const tx = -Math.sin(a) * sign;
+    const ty = Math.cos(a) * sign;
+    const bx = cx + r * ux;
+    const by = cy + r * uy;
+    ctx.beginPath();
+    ctx.moveTo(bx + tx * 9, by + ty * 9);
+    ctx.lineTo(bx - tx * 6 + ux * 5.5, by - ty * 6 + uy * 5.5);
+    ctx.lineTo(bx - tx * 6 - ux * 5.5, by - ty * 6 - uy * 5.5);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // 起点实心点 / 终点空心圈
+  const dot = (deg, filled) => {
+    const a = radA(deg);
+    const x = cx + r * Math.cos(a);
+    const y = cy + r * Math.sin(a);
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, TAU);
+    if (filled) {
+      ctx.fillStyle = color;
+      ctx.fill();
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  };
+  dot(route.fromDeg, true);
+  dot(route.toDeg, false);
 }
 
 function drawSingle() {
@@ -1015,6 +1167,9 @@ function drawSingle() {
     ctx.closePath();
     ctx.fill();
   }
+
+  // 调机旋转路径弧（最外侧）
+  drawRouteOverlay(cx, cy, R);
 
   // 中心文字
   ctx.fillStyle = '#1f2937';
@@ -1255,6 +1410,9 @@ function drawMulti() {
     ctx.fill();
     ctx.restore();
   }
+
+  // 调机旋转路径弧（最外侧）
+  drawRouteOverlay(cx, cy, R);
 
   // 中心文字
   ctx.fillStyle = '#1f2937';
@@ -1870,6 +2028,14 @@ $('detentsEnabled').addEventListener('change', () => {
 });
 $('detentSteps').addEventListener('input', scheduleCompute);
 $('detentOffset').addEventListener('input', scheduleCompute);
+$('routeFrom').addEventListener('input', () => {
+  state.routeTouched = true;
+  planRouteUi();
+});
+$('routeTo').addEventListener('input', () => {
+  state.routeTouched = true;
+  planRouteUi();
+});
 $('loadExample').addEventListener('click', () => {
   $('seamWidth').value = 20;
   $('zones').innerHTML = '';
