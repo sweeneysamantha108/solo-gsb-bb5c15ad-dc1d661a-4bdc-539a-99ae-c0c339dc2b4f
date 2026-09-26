@@ -46,6 +46,18 @@ function validateDetents(detents) {
   return null;
 }
 
+/** 校验调机旋转路径参数，返回错误信息或 null。 */
+function validateRoute(route) {
+  if (route === undefined || route === null) return null;
+  if (typeof route !== 'object' || Array.isArray(route)) {
+    return 'route 必须为对象，如 {fromDeg:30, toDeg:210}';
+  }
+  if (!isFiniteNumber(route.fromDeg) || !isFiniteNumber(route.toDeg)) {
+    return 'route.fromDeg 与 route.toDeg 必须为数值（角度，按整圈归一）';
+  }
+  return null;
+}
+
 /** 校验共用的接缝宽度与保护区，返回错误信息或 null。 */
 function validateSharedInput(seamWidth, zones) {
   if (!isFiniteNumber(seamWidth) || seamWidth < 0) {
@@ -64,7 +76,7 @@ function validateSharedInput(seamWidth, zones) {
 
 app.post('/api/compute', (req, res) => {
   const body = req.body || {};
-  const { circumference, seamWidth, zones, detents } = body;
+  const { circumference, seamWidth, zones, detents, route } = body;
 
   if (!isFiniteNumber(circumference) || circumference <= 0) {
     return res.status(400).json({ error: 'circumference 必须为大于 0 的数值 (mm)' });
@@ -73,9 +85,11 @@ app.post('/api/compute', (req, res) => {
   if (sharedError) return res.status(400).json({ error: sharedError });
   const detentsError = validateDetents(detents);
   if (detentsError) return res.status(400).json({ error: detentsError });
+  const routeError = validateRoute(route);
+  if (routeError) return res.status(400).json({ error: routeError });
 
   try {
-    const result = computeSeamAvoidance(circumference, seamWidth, zones, detents);
+    const result = computeSeamAvoidance(circumference, seamWidth, zones, detents, route);
     res.json(result);
   } catch (e) {
     return res.status(400).json({ error: e.message });
@@ -84,7 +98,7 @@ app.post('/api/compute', (req, res) => {
 
 app.post('/api/compute-multi', (req, res) => {
   const body = req.body || {};
-  const { circumferences, seamWidth, zones, detents } = body;
+  const { circumferences, seamWidth, zones, detents, route } = body;
 
   if (
     !Array.isArray(circumferences) ||
@@ -104,9 +118,11 @@ app.post('/api/compute-multi', (req, res) => {
   if (sharedError) return res.status(400).json({ error: sharedError });
   const detentsError = validateDetents(detents);
   if (detentsError) return res.status(400).json({ error: detentsError });
+  const routeError = validateRoute(route);
+  if (routeError) return res.status(400).json({ error: routeError });
 
   try {
-    const result = computeMultiSpec(circumferences, seamWidth, zones, detents);
+    const result = computeMultiSpec(circumferences, seamWidth, zones, detents, route);
     res.json(result);
   } catch (e) {
     return res.status(400).json({ error: e.message });

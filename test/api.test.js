@@ -181,3 +181,141 @@ test('多规格：无共同解时返回最小违约备选 fallback（关闭/启�
   );
   assert.match(rd.json.fallback.reason, /档位/);
 });
+
+/* ---------------- 调机旋转路径 route ---------------- */
+
+test('单规格：route 返回路径规划结果；缺省 route 时为 null', async () => {
+  const r = await postJson('/api/compute', {
+    circumference: 360,
+    seamWidth: 0,
+    zones: [{ start: 90, end: 180 }],
+    route: { fromDeg: 300, toDeg: 30 },
+  });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.route);
+  assert.equal(r.json.route.status, 'ok');
+  assert.equal(r.json.route.best.direction, 'cw');
+  assert.equal(Math.round(r.json.route.best.sweepDeg), 90);
+  assert.equal(r.json.route.from.safe, true);
+  assert.equal(r.json.route.to.safe, true);
+  assert.equal(r.json.route.detentsConstrained, false);
+
+  const noRoute = await postJson('/api/compute', baseSingle);
+  assert.equal(noRoute.status, 200);
+  assert.equal(noRoute.json.route, null);
+});
+
+test('单规格：route 参数非法 → 400', async () => {
+  for (const bad of [
+    { fromDeg: 'x', toDeg: 10 },
+    { fromDeg: 10 },
+    { toDeg: 10 },
+    'on',
+    42,
+    [10, 20],
+  ]) {
+    const r = await postJson('/api/compute', { ...baseSingle, route: bad });
+    assert.equal(r.status, 400, `route=${JSON.stringify(bad)} 应 400`);
+    assert.match(r.json.error, /route/);
+  }
+});
+
+test('单规格：启用档位时 route 两端须落在可用档位上', async () => {
+  const base = {
+    circumference: 360,
+    seamWidth: 0,
+    zones: [{ start: 90, end: 180 }],
+    detents: { enabled: true, steps: 12 },
+  };
+  const ok = await postJson('/api/compute', {
+    ...base,
+    route: { fromDeg: 210, toDeg: 30 },
+  });
+  assert.equal(ok.json.route.status, 'ok');
+  assert.equal(ok.json.route.detentsConstrained, true);
+  assert.equal(ok.json.route.from.detentIndex, 7);
+
+  const off = await postJson('/api/compute', {
+    ...base,
+    route: { fromDeg: 210, toDeg: 35 },
+  });
+  assert.equal(off.json.route.status, 'off-detent');
+  assert.equal(off.json.route.to.onDetent, false);
+});
+
+test('多规格：route 返回与单规格一致的结构；隔开时报不可达', async () => {
+  const r = await postJson('/api/compute-multi', {
+    circumferences: [360, 360],
+    seamWidth: 0,
+    zones: [{ start: 90, end: 180 }],
+    route: { fromDeg: 300, toDeg: 30 },
+  });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.route);
+  assert.equal(r.json.route.status, 'ok');
+  assert.equal(r.json.route.best.direction, 'cw');
+  assert.equal(typeof r.json.route.reason, 'string');
+
+  // 两端各自安全但被禁用段隔开 → unreachable
+  const sep = await postJson('/api/compute-multi', {
+    circumferences: [360, 360],
+    seamWidth: 0,
+    zones: [
+      { start: 0, end: 90 },
+      { start: 180, end: 270 },
+    ],
+    route: { fromDeg: 120, toDeg: 300 },
+  });
+  assert.equal(sep.json.route.status, 'unreachable');
+  assert.equal(sep.json.route.from.safe, true);
+  assert.equal(sep.json.route.to.safe, true);
+  assert.equal(sep.json.route.best, null);
+
+  // 缺省 route → null
+  const noRoute = await postJson('/api/compute-multi', baseMulti);
+  assert.equal(noRoute.json.route, null);
+
+  // 非法 route → 400
+  const bad = await postJson('/api/compute-multi', {
+    ...baseMulti,
+    route: { fromDeg: 10, toDeg: 'x' },
+  });
+  assert.equal(bad.status, 400);
+  assert.match(bad.json.error, /route/);
+});
+
+test('路径边界：跨 0°、整圈可行与起终点相同', async () => {
+  // 跨 0°：可行跨零弧 180°→90°，350°→10° 顺时针 20°
+  const wrap = await postJson('/api/compute', {
+    circumference: 360,
+    seamWidth: 0,
+    zones: [{ start: 90, end: 180 }],
+    route: { fromDeg: 350, toDeg: 10 },
+  });
+  assert.equal(wrap.json.route.status, 'ok');
+  assert.equal(wrap.json.route.best.direction, 'cw');
+  assert.equal(Math.round(wrap.json.route.best.sweepDeg), 20);
+
+  // 整圈可行：两方向均可达，等长（180°）取顺时针
+  const full = await postJson('/api/compute', {
+    circumference: 360,
+    seamWidth: 0,
+    zones: [],
+    route: { fromDeg: 0, toDeg: 180 },
+  });
+  assert.equal(full.json.route.cw.reachable, true);
+  assert.equal(full.json.route.ccw.reachable, true);
+  assert.equal(full.json.route.best.direction, 'cw');
+  assert.equal(Math.round(full.json.route.best.sweepDeg), 180);
+
+  // 起终点相同（含归一化后相同）：转角 0，无需旋转
+  const same = await postJson('/api/compute', {
+    circumference: 360,
+    seamWidth: 0,
+    zones: [{ start: 90, end: 180 }],
+    route: { fromDeg: -30, toDeg: 330 },
+  });
+  assert.equal(same.json.route.samePoint, true);
+  assert.equal(same.json.route.status, 'ok');
+  assert.equal(Math.round(same.json.route.best.sweepDeg), 0);
+});

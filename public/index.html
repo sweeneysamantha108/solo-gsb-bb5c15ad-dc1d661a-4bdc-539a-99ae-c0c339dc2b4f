@@ -98,6 +98,20 @@
     </section>
 
     <div class="col-right">
+      <section class="panel route-panel" id="routePanel">
+        <h2>调机旋转路径</h2>
+        <div class="route-inputs">
+          <label>当前角度 (°)
+            <input id="routeFrom" type="number" step="any" placeholder="如 300" />
+          </label>
+          <label>目标角度 (°)
+            <input id="routeTo" type="number" step="any" placeholder="如 30" />
+          </label>
+        </div>
+        <p class="hint">沿圆周单向连续旋转且全程处于安全角度（单规格取可行段、多规格取共用段）；启用档位时两端须落在可用档位上</p>
+        <div id="routeResult" class="route-result" hidden></div>
+      </section>
+
       <section class="panel results" id="singleResults">
         <h2>结果</h2>
         <div id="bestBox" class="best" hidden></div>

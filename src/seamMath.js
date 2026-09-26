@@ -13,6 +13,7 @@
 const EPS = 1e-9;
 
 const { parseDetents, buildSingleDetents, circDistDeg, FULL: DEG_FULL } = require('./detents');
+const { planRoute } = require('./routePlan');
 
 function mod(n, m) {
   return ((n % m) + m) % m;
@@ -101,8 +102,10 @@ function computeGaps(merged, C) {
  * @param {Array<{start: number, end: number}>} zones 印刷保护区 (mm)
  * @param {object} [detentsOpt] 设备档位约束
  *        {enabled:boolean, steps?:2～360 整数, offsetDeg?:number}
+ * @param {object} [routeOpt] 调机旋转路径 {fromDeg, toDeg}（角度，按整圈归一）；
+ *        基于可行段（启用档位时还要求两端落在可用档位上）规划单向连续旋转路径
  */
-function computeSeamAvoidance(C, W, zones, detentsOpt) {
+function computeSeamAvoidance(C, W, zones, detentsOpt, routeOpt) {
   const zonePieces = [];
   const rawForbidden = [];
   for (const z of zones) {
@@ -195,6 +198,23 @@ function computeSeamAvoidance(C, W, zones, detentsOpt) {
     }
   }
 
+  // 调机旋转路径规划（可选）：基于可行段与可用档位判断两端并选出较短单向路径
+  let route = null;
+  if (routeOpt !== undefined && routeOpt !== null) {
+    const arcs = feasible.map((f) => ({
+      startDeg: f.startDeg,
+      endDeg: f.endDeg,
+      wraps: f.wraps,
+      widthDeg: f.widthDeg,
+    }));
+    route = planRoute(
+      routeOpt.fromDeg,
+      routeOpt.toDeg,
+      arcs,
+      detents.enabled ? { available: detents.available } : null
+    );
+  }
+
   return {
     circumference: C,
     seamWidth: W,
@@ -210,6 +230,7 @@ function computeSeamAvoidance(C, W, zones, detentsOpt) {
     best,
     noSolution,
     detents,
+    route,
     coveragePct: Math.min(100, (coveredMm / C) * 100),
   };
 }

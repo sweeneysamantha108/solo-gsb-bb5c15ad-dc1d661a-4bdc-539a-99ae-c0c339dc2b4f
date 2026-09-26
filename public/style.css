@@ -344,6 +344,23 @@ button.small { padding: 3px 10px; font-size: 12px; }
 .fallback-box .fb-item.ok { color: #15803d; }
 .fallback-box .fb-zero { color: #15803d; }
 
+/* ---------------- 调机旋转路径 ---------------- */
+
+.route-inputs { display: flex; gap: 10px; }
+.route-inputs label { flex: 1; font-size: 12px; color: var(--muted); }
+.route-result {
+  margin-top: 10px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.route-result.ok { background: #f5f3ff; border: 1px solid #ddd6fe; color: #5b21b6; }
+.route-result.bad { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.route-result.warn { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; }
+.route-result .num { font-size: 18px; font-weight: 700; }
+.route-result .rt-sub { margin-top: 3px; font-size: 12px; opacity: 0.85; }
+
 /* ---------------- 方案快照 ---------------- */
 
 .snapshot-save { display: flex; gap: 8px; }

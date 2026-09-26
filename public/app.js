@@ -128,6 +128,19 @@ function readInputs() {
   return { circumference, seamWidth, zones: readZones(), detents: readDetents() };
 }
 
+/** 读取调机路径输入；两个都为空返回 null（不启用），只填一个或非法返回 {error}。 */
+function readRoute() {
+  const fromRaw = $('routeFrom').value.trim();
+  const toRaw = $('routeTo').value.trim();
+  if (fromRaw === '' && toRaw === '') return null;
+  const fromDeg = parseFloat(fromRaw);
+  const toDeg = parseFloat(toRaw);
+  if (!Number.isFinite(fromDeg) || !Number.isFinite(toDeg)) {
+    return { error: '调机路径的当前角度与目标角度都必须为数值（°）' };
+  }
+  return { fromDeg, toDeg };
+}
+
 function readMultiInputs() {
   const circumferences = [...document.querySelectorAll('#specs .c-spec')].map((i) =>
     parseFloat(i.value)
@@ -158,6 +171,7 @@ function setMode(mode) {
   }
   refreshSpecRows();
   updateSnapshotModeUI();
+  renderRoute();
   scheduleCompute();
 }
 
@@ -199,6 +213,9 @@ async function compute() {
   }
   const detentsError = validateDetentsInput(body.detents);
   if (detentsError) return showError(detentsError);
+  const route = readRoute();
+  if (route && route.error) return showError(route.error);
+  if (route) body.route = route;
 
   let result;
   try {
@@ -219,6 +236,7 @@ async function compute() {
   if (result.best) state.thetaMm = result.best.mm;
   exitDiffMode();
   renderResults();
+  renderRoute();
   draw();
 }
 
@@ -239,6 +257,9 @@ async function computeMulti() {
   }
   const detentsError = validateDetentsInput(body.detents);
   if (detentsError) return showError(detentsError);
+  const route = readRoute();
+  if (route && route.error) return showError(route.error);
+  if (route) body.route = route;
 
   let result;
   try {
@@ -262,12 +283,61 @@ async function computeMulti() {
   }
   exitDiffMode();
   renderMultiResults();
+  renderRoute();
   draw();
 }
 
 function showError(msg) {
   $('error').textContent = msg;
   $('error').hidden = false;
+}
+
+/* ---------------- 调机旋转路径结果 ---------------- */
+
+/** 当前模式下随计算结果返回的路径规划结果。 */
+function currentRoute() {
+  const r = state.mode === 'multi' ? state.multiResult : state.result;
+  return r && r.route ? r.route : null;
+}
+
+function renderRoute() {
+  const box = $('routeResult');
+  const route = currentRoute();
+  if (!route) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+
+  if (route.status === 'ok') {
+    box.className = 'route-result ok';
+    if (route.samePoint) {
+      box.innerHTML =
+        `<div class="rt-line"><strong>起点即终点</strong>（${fmtDeg(route.fromDeg)}°），无需旋转。</div>`;
+      return;
+    }
+    const b = route.best;
+    const other =
+      route.cw.reachable && route.ccw.reachable
+        ? `<div class="rt-sub">另一方向：${b.direction === 'cw' ? '逆时针' : '顺时针'} ` +
+          `${fmtDeg((b.direction === 'cw' ? route.ccw : route.cw).sweepDeg)}°</div>`
+        : '';
+    box.innerHTML =
+      `<div class="rt-line">方向：<strong>${b.directionLabel}</strong> ｜ ` +
+      `转角：<span class="num">${fmtDeg(b.sweepDeg)}°</span></div>` +
+      `<div class="rt-sub">${fmtDeg(route.fromDeg)}° → ${fmtDeg(route.toDeg)}°` +
+      `，全程处于安全角度</div>${other}`;
+    return;
+  }
+
+  const labels = {
+    unreachable: '不可达',
+    'unsafe-endpoint': '端点不安全',
+    'off-detent': '端点不在可用档位',
+  };
+  box.className = 'route-result ' + (route.status === 'off-detent' ? 'warn' : 'bad');
+  box.innerHTML = `<strong>${labels[route.status] || '不可达'}：</strong>${route.reason}`;
 }
 
 /* ---------------- 档位结果辅助 ---------------- */
@@ -907,6 +977,81 @@ function drawRingSegments(cx, cy, r, segments, C, color, width) {
   }
 }
 
+/**
+ * 调机旋转路径叠加层：在环半径 ringR 上画出 from/to 端点与所选方向的路径弧。
+ * 可达：紫色路径弧（末端箭头）+ 紫色端点；不可达：红色端点不画弧；
+ * 端点不安全/不在档位：问题端点红色、另一端灰色。
+ */
+function drawRouteOverlay(cx, cy, ringR) {
+  const route = currentRoute();
+  if (!route) return;
+  const radD = (deg) => (deg / 360) * TAU - Math.PI / 2;
+  const ok = route.status === 'ok' && route.best;
+  const endpointOk = (side) => side.safe && side.onDetent !== false;
+
+  let fromColor;
+  let toColor;
+  if (ok) {
+    fromColor = toColor = '#7c3aed';
+  } else if (route.status === 'unreachable') {
+    fromColor = toColor = '#dc2626';
+  } else {
+    fromColor = endpointOk(route.from) ? '#9ca3af' : '#dc2626';
+    toColor = endpointOk(route.to) ? '#9ca3af' : '#dc2626';
+  }
+
+  // 路径弧（可达且转角非零）：canvas 角度增大方向即本系统的顺时针
+  if (ok && route.best.sweepDeg > 1e-9) {
+    const ccw = route.best.direction === 'ccw';
+    ctx.save();
+    ctx.strokeStyle = '#7c3aed';
+    ctx.globalAlpha = 0.95;
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, radD(route.best.fromDeg), radD(route.best.toDeg), ccw);
+    ctx.stroke();
+    ctx.restore();
+
+    // 末端箭头（沿圆周切向）
+    const sign = ccw ? -1 : 1;
+    const ab = radD(route.best.toDeg);
+    const ux = Math.cos(ab);
+    const uy = Math.sin(ab);
+    const tx = -Math.sin(ab) * sign;
+    const ty = Math.cos(ab) * sign;
+    const bx = cx + ringR * ux;
+    const by = cy + ringR * uy;
+    ctx.beginPath();
+    ctx.moveTo(bx + tx * 9, by + ty * 9);
+    ctx.lineTo(bx - tx * 6 + ux * 5.5, by - ty * 6 + uy * 5.5);
+    ctx.lineTo(bx - tx * 6 - ux * 5.5, by - ty * 6 - uy * 5.5);
+    ctx.closePath();
+    ctx.fillStyle = '#7c3aed';
+    ctx.fill();
+  }
+
+  // 端点标记：from 空心圆、to 实心圆（同点时只画一个实心点）
+  const mark = (deg, color, filled) => {
+    const a = radD(deg);
+    const x = cx + ringR * Math.cos(a);
+    const y = cy + ringR * Math.sin(a);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, TAU);
+    ctx.fillStyle = filled ? color : '#fff';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  };
+  if (route.samePoint && ok) {
+    mark(route.fromDeg, fromColor, true);
+  } else {
+    mark(route.fromDeg, fromColor, false);
+    mark(route.toDeg, toColor, true);
+  }
+}
+
 function drawSingle() {
   const r = state.result;
   const { cx, cy, R, size } = geom();
@@ -1015,6 +1160,9 @@ function drawSingle() {
     ctx.closePath();
     ctx.fill();
   }
+
+  // 调机旋转路径（叠在可行/禁用环上）
+  drawRouteOverlay(cx, cy, R);
 
   // 中心文字
   ctx.fillStyle = '#1f2937';
@@ -1255,6 +1403,9 @@ function drawMulti() {
     ctx.fill();
     ctx.restore();
   }
+
+  // 调机旋转路径（叠在共用安全段环上）
+  drawRouteOverlay(cx, cy, commonR);
 
   // 中心文字
   ctx.fillStyle = '#1f2937';
@@ -1870,6 +2021,8 @@ $('detentsEnabled').addEventListener('change', () => {
 });
 $('detentSteps').addEventListener('input', scheduleCompute);
 $('detentOffset').addEventListener('input', scheduleCompute);
+$('routeFrom').addEventListener('input', scheduleCompute);
+$('routeTo').addEventListener('input', scheduleCompute);
 $('loadExample').addEventListener('click', () => {
   $('seamWidth').value = 20;
   $('zones').innerHTML = '';
